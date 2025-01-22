@@ -95,10 +95,23 @@ def main():
             content, _bytes_read = decode_bencode(bencoded_content)
             tracker_url = content["announce"].decode()
             content_length = content["info"]["length"]
+            piece_length = content["info"]["piece length"]
+            pieces = content["info"]["pieces"]
             bencoded_info = encode_bencode(content["info"])
+
             print(f"Tracker URL: {tracker_url}")
             print(f"Length: {content_length}")
             print(f"Info Hash: {sha1(bencoded_info).hexdigest()}")
+            print(f"Piece Length: {piece_length}")
+
+            piece_size = 20
+            chunks: list[bytes] = [
+                pieces[i : i + piece_size] for i in range(0, len(pieces), piece_size)
+            ]
+            print("Piece Hashes: ")
+            for piece in chunks:
+                # Format the piece as a hex string
+                print("".join("{:02x}".format(x) for x in piece))
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 
