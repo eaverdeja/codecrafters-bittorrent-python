@@ -4,7 +4,7 @@ import random
 import requests
 import json
 import sys
-import string
+import asyncio
 
 
 @dataclass
@@ -13,6 +13,9 @@ class TorrentInfo:
     content_length: str
     piece_length: str
     pieces: str
+
+
+PEER_ID = random.randbytes(20)
 
 
 # Examples:
@@ -104,7 +107,7 @@ def bytes_to_str(data: bytes) -> str:
     raise TypeError(f"Type not serializable: {type(data)}")
 
 
-def main():
+async def main():
     command = sys.argv[1]
 
     match command:
@@ -135,12 +138,11 @@ def main():
             torrent_filename = sys.argv[2]
             peers = []
             torrent_info, bencoded_info = get_torrent_info(torrent_filename)
-            alphanumerics = string.digits + string.ascii_letters
             response = requests.get(
                 torrent_info.tracker_url,
                 params={
                     "info_hash": sha1(bencoded_info).digest(),
-                    "peer_id": "".join(random.choices(alphanumerics, k=20)),
+                    "peer_id": PEER_ID,
                     "port": 6881,
                     "uploaded": 0,
                     "downloaded": 0,
@@ -161,9 +163,34 @@ def main():
                 peers.append(f"{peer_address}:{peer_port}")
                 pos += 6
             print(peers)
+        case "handshake":
+            torrent_filename = sys.argv[2]
+            peer = sys.argv[3]
+            torrent_info, bencoded_info = get_torrent_info(torrent_filename)
+            peer_address, peer_port = peer.split(":")
+            reader, writer = await asyncio.open_connection(
+                host=peer_address,
+                port=peer_port,
+            )
+
+            # Handshake request
+            message = (
+                int.to_bytes(19)
+                + "BitTorrent protocol".encode()
+                + bytes().join(int.to_bytes(0) for _ in range(8))
+                + sha1(bencoded_info).digest()
+                + PEER_ID
+            )
+            writer.write(message)
+            await writer.drain()
+
+            # Handshake response
+            data = await reader.read(len(message))
+            encoded_peer_id = data[len(message) - len(PEER_ID) :]
+            print(f"Peer ID: {"".join(f"{piece:02x}" for piece in encoded_peer_id)}")
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
