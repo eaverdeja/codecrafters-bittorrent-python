@@ -69,6 +69,15 @@ def main():
 
             decoded_value, _bytes_read = decode_bencode(bencoded_value)
             print(json.dumps(decoded_value, default=bytes_to_str))
+        case "info":
+            torrent_filename = sys.argv[2]
+            with open(torrent_filename, "rb") as file:
+                bencoded_content = file.read()
+            content, _bytes_read = decode_bencode(bencoded_content)
+            tracker_url = content["announce"].decode()
+            content_length = content["info"]["length"]
+            print(f"Tracker URL: {tracker_url}")
+            print(f"Length: {content_length}")
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 
