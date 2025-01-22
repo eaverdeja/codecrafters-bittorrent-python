@@ -1,3 +1,4 @@
+from hashlib import sha1
 import json
 import sys
 
@@ -49,6 +50,22 @@ def decode_bencode(bencode: bytes, pos=0) -> tuple[bytes, int]:
         )
 
 
+def encode_bencode(data: int | str | list | dict | bytes) -> bytes:
+    if isinstance(data, int):
+        return f"i{data}e".encode()
+    elif isinstance(data, str):
+        return f"{len(data)}:{data}".encode()
+    elif isinstance(data, list):
+        elements = [encode_bencode(element) for element in data]
+        return b"l" + b"".join(elements) + b"e"
+    elif isinstance(data, dict):
+        elements = [
+            encode_bencode(key) + encode_bencode(value) for key, value in data.items()
+        ]
+        return b"d" + b"".join(elements) + b"e"
+    raise TypeError(f"Cannot encode {type(data)}")
+
+
 # json.dumps() can't handle bytes, but bencoded "strings" need to be
 # bytestrings since they might contain non utf-8 characters.
 #
@@ -76,8 +93,10 @@ def main():
             content, _bytes_read = decode_bencode(bencoded_content)
             tracker_url = content["announce"].decode()
             content_length = content["info"]["length"]
+            bencoded_info = encode_bencode(content["info"])
             print(f"Tracker URL: {tracker_url}")
             print(f"Length: {content_length}")
+            print(f"Info Hash: {sha1(bencoded_info).hexdigest()}")
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 
