@@ -1,8 +1,18 @@
 from hashlib import sha1
+from dataclasses import dataclass
+import random
+import requests
 import json
 import sys
+import string
 
-# import requests - available if you need it!
+
+@dataclass
+class TorrentInfo:
+    tracker_url: str
+    content_length: str
+    piece_length: str
+    pieces: str
 
 
 # Examples:
@@ -68,6 +78,21 @@ def encode_bencode(data: int | str | list | dict | bytes) -> bytes:
     raise TypeError(f"Cannot encode {type(data)}")
 
 
+def get_torrent_info(torrent_filename: str) -> tuple[TorrentInfo, bytes]:
+    with open(torrent_filename, "rb") as file:
+        bencoded_content = file.read()
+    content, _bytes_read = decode_bencode(bencoded_content)
+    torrent_info = TorrentInfo(
+        tracker_url=content["announce"].decode(),
+        content_length=content["info"]["length"],
+        piece_length=content["info"]["piece length"],
+        pieces=content["info"]["pieces"],
+    )
+    bencoded_info = encode_bencode(content["info"])
+
+    return torrent_info, bencoded_info
+
+
 # json.dumps() can't handle bytes, but bencoded "strings" need to be
 # bytestrings since they might contain non utf-8 characters.
 #
@@ -90,28 +115,52 @@ def main():
             print(json.dumps(decoded_value, default=bytes_to_str))
         case "info":
             torrent_filename = sys.argv[2]
-            with open(torrent_filename, "rb") as file:
-                bencoded_content = file.read()
-            content, _bytes_read = decode_bencode(bencoded_content)
-            tracker_url = content["announce"].decode()
-            content_length = content["info"]["length"]
-            piece_length = content["info"]["piece length"]
-            pieces = content["info"]["pieces"]
-            bencoded_info = encode_bencode(content["info"])
+            torrent_info, bencoded_info = get_torrent_info(torrent_filename)
 
-            print(f"Tracker URL: {tracker_url}")
-            print(f"Length: {content_length}")
+            print(f"Tracker URL: {torrent_info.tracker_url}")
+            print(f"Length: {torrent_info.content_length}")
             print(f"Info Hash: {sha1(bencoded_info).hexdigest()}")
-            print(f"Piece Length: {piece_length}")
+            print(f"Piece Length: {torrent_info.piece_length}")
 
             piece_size = 20
             chunks: list[bytes] = [
-                pieces[i : i + piece_size] for i in range(0, len(pieces), piece_size)
+                torrent_info.pieces[i : i + piece_size]
+                for i in range(0, len(torrent_info.pieces), piece_size)
             ]
             print("Piece Hashes: ")
             for piece in chunks:
                 # Format the piece as a hex string
                 print("".join("{:02x}".format(x) for x in piece))
+        case "peers":
+            torrent_filename = sys.argv[2]
+            peers = []
+            torrent_info, bencoded_info = get_torrent_info(torrent_filename)
+            alphanumerics = string.digits + string.ascii_letters
+            response = requests.get(
+                torrent_info.tracker_url,
+                params={
+                    "info_hash": sha1(bencoded_info).digest(),
+                    "peer_id": "".join(random.choices(alphanumerics, k=20)),
+                    "port": 6881,
+                    "uploaded": 0,
+                    "downloaded": 0,
+                    "left": torrent_info.content_length,
+                    "compact": 1,
+                },
+            )
+            result, _ = decode_bencode(response.content)
+            pos = 0
+            while pos < len(result["peers"]):
+                # First 4 bytes compose the peer's address
+                peer_address = ".".join(
+                    str(int.from_bytes(result["peers"][pos + i : pos + i + 1]))
+                    for i in range(4)
+                )
+                # Next 2 bytes represent the peer's port
+                peer_port = int.from_bytes(result["peers"][pos + 4 : pos + 6])
+                peers.append(f"{peer_address}:{peer_port}")
+                pos += 6
+            print(peers)
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 
