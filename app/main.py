@@ -1,28 +1,38 @@
 import json
 import sys
 
-# import bencodepy - available if you need it!
 # import requests - available if you need it!
 
 
 # Examples:
 #
-# - decode_bencode(b"5:hello") -> b"hello"
-# - decode_bencode(b"10:hello12345") -> b"hello12345"
-def decode_bencode(bencoded_value: bytes) -> bytes:
-    first_char = chr(bencoded_value[0])
-    if first_char.isdigit():  # strings
-        first_colon_index = bencoded_value.find(b":")
-        if first_colon_index == -1:
-            raise ValueError("Invalid encoded value")
-        return bencoded_value[first_colon_index + 1 :]
-    elif first_char == "i":  # integers
-        end_marker_index = bencoded_value.find(b"e")
-        if end_marker_index == -1:
-            raise ValueError("Invalid encoded value")
-        return int(bencoded_value[1:end_marker_index])
+# - decode_bencode(b"5:hello") -> b"hello", 7
+# - decode_bencode(b"10:hello12345") -> b"hello12345", 13
+def decode_bencode(s: bytes, pos=0) -> tuple[bytes, int]:
+    char_at_pos = chr(s[pos])
+    if char_at_pos == "l":
+        items = []
+        pos += 1  # +1 to account for the start of list marker
+        while pos < len(s):
+            if chr(s[pos]) == "e":
+                break
+            item, pos = decode_bencode(s, pos)
+            items.append(item)
+
+        return items, pos + 1  # +1 to account for the end of list marker
+    elif char_at_pos == "i":
+        end = s.index(b"e", pos)
+        return int(s[pos + 1 : end]), end + 1  # +1 to account for the end of int marker
+    elif char_at_pos.isdigit():
+        colon = s.index(b":", pos)
+        length = int(s[pos:colon])
+        start = colon + 1
+        end = start + length
+        return s[start:end], end
     else:
-        raise NotImplementedError("Only strings are supported at the moment")
+        raise NotImplementedError(
+            f"Only strings are supported at the moment - got: {char_at_pos}"
+        )
 
 
 # json.dumps() can't handle bytes, but bencoded "strings" need to be
@@ -43,7 +53,8 @@ def main():
         case "decode":
             bencoded_value = sys.argv[2].encode()
 
-            print(json.dumps(decode_bencode(bencoded_value), default=bytes_to_str))
+            decoded_value, _bytes_read = decode_bencode(bencoded_value)
+            print(json.dumps(decoded_value, default=bytes_to_str))
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 
