@@ -63,6 +63,8 @@ def encode_bencode(data: int | str | list | dict | bytes) -> bytes:
             encode_bencode(key) + encode_bencode(value) for key, value in data.items()
         ]
         return b"d" + b"".join(elements) + b"e"
+    elif isinstance(data, bytes):
+        return f"{len(data)}:".encode() + data
     raise TypeError(f"Cannot encode {type(data)}")
 
 
