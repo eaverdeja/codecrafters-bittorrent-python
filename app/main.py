@@ -10,11 +10,17 @@ import sys
 # - decode_bencode(b"5:hello") -> b"hello"
 # - decode_bencode(b"10:hello12345") -> b"hello12345"
 def decode_bencode(bencoded_value: bytes) -> bytes:
-    if chr(bencoded_value[0]).isdigit():
+    first_char = chr(bencoded_value[0])
+    if first_char.isdigit():  # strings
         first_colon_index = bencoded_value.find(b":")
         if first_colon_index == -1:
             raise ValueError("Invalid encoded value")
         return bencoded_value[first_colon_index + 1 :]
+    elif first_char == "i":  # integers
+        end_marker_index = bencoded_value.find(b"e")
+        if end_marker_index == -1:
+            raise ValueError("Invalid encoded value")
+        return int(bencoded_value[1:end_marker_index])
     else:
         raise NotImplementedError("Only strings are supported at the moment")
 
