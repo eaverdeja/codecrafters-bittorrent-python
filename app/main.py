@@ -5,6 +5,7 @@ import requests
 import json
 import sys
 import asyncio
+import argparse
 
 
 @dataclass
@@ -96,6 +97,66 @@ def get_torrent_info(torrent_filename: str) -> tuple[TorrentInfo, bytes]:
     return torrent_info, bencoded_info
 
 
+def get_peers(torrent_filename: str) -> list[str]:
+    peers = []
+    torrent_info, bencoded_info = get_torrent_info(torrent_filename)
+    response = requests.get(
+        torrent_info.tracker_url,
+        params={
+            "info_hash": sha1(bencoded_info).digest(),
+            "peer_id": PEER_ID,
+            "port": 6881,
+            "uploaded": 0,
+            "downloaded": 0,
+            "left": torrent_info.content_length,
+            "compact": 1,
+        },
+    )
+    result, _ = decode_bencode(response.content)
+    pos = 0
+    while pos < len(result["peers"]):
+        # First 4 bytes compose the peer's address
+        peer_address = ".".join(
+            str(int.from_bytes(result["peers"][pos + i : pos + i + 1]))
+            for i in range(4)
+        )
+        # Next 2 bytes represent the peer's port
+        peer_port = int.from_bytes(result["peers"][pos + 4 : pos + 6])
+        peers.append(f"{peer_address}:{peer_port}")
+        pos += 6
+
+    return peers
+
+
+async def perform_handshake(
+    torrent_filename: str, peer: str
+) -> tuple[str, asyncio.StreamReader, asyncio.StreamWriter]:
+    torrent_info, bencoded_info = get_torrent_info(torrent_filename)
+    peer_address, peer_port = peer.split(":")
+    reader, writer = await asyncio.open_connection(
+        host=peer_address,
+        port=peer_port,
+    )
+
+    # Handshake request
+    message = (
+        int.to_bytes(19)
+        + "BitTorrent protocol".encode()
+        + bytes().join(int.to_bytes(0) for _ in range(8))
+        + sha1(bencoded_info).digest()
+        + PEER_ID
+    )
+    writer.write(message)
+    await writer.drain()
+
+    # Handshake response
+    data = await reader.readexactly(len(message))
+    encoded_peer_id = data[len(message) - len(PEER_ID) :]
+    peer_id = "".join(f"{piece:02x}" for piece in encoded_peer_id)
+
+    return peer_id, reader, writer
+
+
 # json.dumps() can't handle bytes, but bencoded "strings" need to be
 # bytestrings since they might contain non utf-8 characters.
 #
@@ -136,58 +197,49 @@ async def main():
                 print("".join("{:02x}".format(x) for x in piece))
         case "peers":
             torrent_filename = sys.argv[2]
-            peers = []
-            torrent_info, bencoded_info = get_torrent_info(torrent_filename)
-            response = requests.get(
-                torrent_info.tracker_url,
-                params={
-                    "info_hash": sha1(bencoded_info).digest(),
-                    "peer_id": PEER_ID,
-                    "port": 6881,
-                    "uploaded": 0,
-                    "downloaded": 0,
-                    "left": torrent_info.content_length,
-                    "compact": 1,
-                },
-            )
-            result, _ = decode_bencode(response.content)
-            pos = 0
-            while pos < len(result["peers"]):
-                # First 4 bytes compose the peer's address
-                peer_address = ".".join(
-                    str(int.from_bytes(result["peers"][pos + i : pos + i + 1]))
-                    for i in range(4)
-                )
-                # Next 2 bytes represent the peer's port
-                peer_port = int.from_bytes(result["peers"][pos + 4 : pos + 6])
-                peers.append(f"{peer_address}:{peer_port}")
-                pos += 6
+            peers = get_peers(torrent_filename)
             print(peers)
         case "handshake":
             torrent_filename = sys.argv[2]
             peer = sys.argv[3]
-            torrent_info, bencoded_info = get_torrent_info(torrent_filename)
-            peer_address, peer_port = peer.split(":")
-            reader, writer = await asyncio.open_connection(
-                host=peer_address,
-                port=peer_port,
+            peer_id, _, _ = perform_handshake(torrent_filename, peer)
+            print(f"Peer ID: {peer_id}")
+        case "download_piece":
+            parser = argparse.ArgumentParser(description="Downloads a torrent piece")
+            parser.add_argument(
+                "--output_dir",
+                "-o",
+                type=str,
+                nargs="*",
+                help="Output directory. Also contains the torrent filename and piece index as trailing arguments",
+            )
+            args = parser.parse_args(sys.argv[2:])
+            output_dir, torrent_filename, piece_index = args.output_dir
+
+            peers = get_peers(torrent_filename)
+            peer_id, reader, writer = await perform_handshake(
+                torrent_filename, peer=peers[0]
             )
 
-            # Handshake request
-            message = (
-                int.to_bytes(19)
-                + "BitTorrent protocol".encode()
-                + bytes().join(int.to_bytes(0) for _ in range(8))
-                + sha1(bencoded_info).digest()
-                + PEER_ID
-            )
+            # Receive bitfield message
+            bitfield_size = int.from_bytes(await reader.readexactly(4))
+            bitfield_type = int.from_bytes(await reader.readexactly(1))
+            if bitfield_type != 0x05:
+                raise Exception("Expected bitfield type")
+            _bitfield_payload = await reader.read(bitfield_size)
+
+            # Send interested message
+            # Payload size is 0, interested type is 2
+            message = bytes().join(int.to_bytes(0) for _ in range(4)) + int.to_bytes(2)
             writer.write(message)
             await writer.drain()
 
-            # Handshake response
-            data = await reader.read(len(message))
-            encoded_peer_id = data[len(message) - len(PEER_ID) :]
-            print(f"Peer ID: {"".join(f"{piece:02x}" for piece in encoded_peer_id)}")
+            # Receive unchoke message
+            unchoke_size = int.from_bytes(await reader.readexactly(4))
+            unchoke_type = int.from_bytes(await reader.readexactly(1))
+            if unchoke_type != 0x01 or unchoke_size != 0x00:
+                raise Exception("Expected unchoke type with 0 size")
+            print("foo!")
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 
