@@ -1,5 +1,6 @@
 from hashlib import sha1
 from dataclasses import dataclass
+from functools import cached_property
 import random
 import requests
 import json
@@ -11,9 +12,22 @@ import argparse
 @dataclass
 class TorrentInfo:
     tracker_url: str
-    content_length: str
-    piece_length: str
+    content_length: int
+    piece_length: int
     pieces: str
+
+    @cached_property
+    def piece_hashes(self) -> list[str]:
+        piece_size = 20
+        chunks: list[bytes] = [
+            self.pieces[i : i + piece_size]
+            for i in range(0, len(self.pieces), piece_size)
+        ]
+        return [
+            # Format the piece as a hex string
+            "".join("{:02x}".format(x) for x in piece)
+            for piece in chunks
+        ]
 
 
 PEER_ID = random.randbytes(20)
@@ -88,8 +102,8 @@ def get_torrent_info(torrent_filename: str) -> tuple[TorrentInfo, bytes]:
     content, _bytes_read = decode_bencode(bencoded_content)
     torrent_info = TorrentInfo(
         tracker_url=content["announce"].decode(),
-        content_length=content["info"]["length"],
-        piece_length=content["info"]["piece length"],
+        content_length=int(content["info"]["length"]),
+        piece_length=int(content["info"]["piece length"]),
         pieces=content["info"]["pieces"],
     )
     bencoded_info = encode_bencode(content["info"])
@@ -168,6 +182,16 @@ def bytes_to_str(data: bytes) -> str:
     raise TypeError(f"Type not serializable: {type(data)}")
 
 
+def chunk_integer(n: int, chunk_size: int) -> list[list[int]]:
+    blocks = []
+    for start in range(0, n, chunk_size):
+        end = min(start + chunk_size - 1, n)
+        block = list(range(start, end + 1))
+        blocks.append(block)
+
+    return blocks
+
+
 async def main():
     command = sys.argv[1]
 
@@ -186,15 +210,9 @@ async def main():
             print(f"Info Hash: {sha1(bencoded_info).hexdigest()}")
             print(f"Piece Length: {torrent_info.piece_length}")
 
-            piece_size = 20
-            chunks: list[bytes] = [
-                torrent_info.pieces[i : i + piece_size]
-                for i in range(0, len(torrent_info.pieces), piece_size)
-            ]
             print("Piece Hashes: ")
-            for piece in chunks:
-                # Format the piece as a hex string
-                print("".join("{:02x}".format(x) for x in piece))
+            for piece_hash in torrent_info.piece_hashes:
+                print(piece_hash)
         case "peers":
             torrent_filename = sys.argv[2]
             peers = get_peers(torrent_filename)
@@ -202,7 +220,7 @@ async def main():
         case "handshake":
             torrent_filename = sys.argv[2]
             peer = sys.argv[3]
-            peer_id, _, _ = perform_handshake(torrent_filename, peer)
+            peer_id, _, _ = await perform_handshake(torrent_filename, peer)
             print(f"Peer ID: {peer_id}")
         case "download_piece":
             parser = argparse.ArgumentParser(description="Downloads a torrent piece")
@@ -216,6 +234,7 @@ async def main():
             args = parser.parse_args(sys.argv[2:])
             output_dir, torrent_filename, piece_index = args.output_dir
 
+            torrent_info, _ = get_torrent_info(torrent_filename)
             peers = get_peers(torrent_filename)
             peer_id, reader, writer = await perform_handshake(
                 torrent_filename, peer=peers[0]
@@ -226,20 +245,92 @@ async def main():
             bitfield_type = int.from_bytes(await reader.readexactly(1))
             if bitfield_type != 0x05:
                 raise Exception("Expected bitfield type")
-            _bitfield_payload = await reader.read(bitfield_size)
+            # Read the rest of the bitfield payload, but ignore it for now
+            _bitfield_payload = await reader.read(bitfield_size - 1)
 
             # Send interested message
             # Payload size is 0, interested type is 2
-            message = bytes().join(int.to_bytes(0) for _ in range(4)) + int.to_bytes(2)
+            # The message length (4 bytes) should account for the type byte
+            message = int.to_bytes(1, length=4) + int.to_bytes(2, length=1)
+            # message = bytes([0, 0, 0, 1, 2])
             writer.write(message)
             await writer.drain()
 
             # Receive unchoke message
             unchoke_size = int.from_bytes(await reader.readexactly(4))
             unchoke_type = int.from_bytes(await reader.readexactly(1))
-            if unchoke_type != 0x01 or unchoke_size != 0x00:
-                raise Exception("Expected unchoke type with 0 size")
-            print("foo!")
+            if unchoke_type != 0x01 or unchoke_size != 0x01:
+                raise Exception("Expected unchoke type with size 1")
+
+            # Chunk pieces
+            blocks: list[bytes] = []
+            is_last_piece = len(torrent_info.piece_hashes) == int(piece_index) + 1
+            piece_length = (
+                torrent_info.piece_length
+                if not is_last_piece
+                else torrent_info.content_length % torrent_info.piece_length
+            )
+            chunks = chunk_integer(piece_length, 16 * 1024)
+            print("pieces to process: ", len(torrent_info.piece_hashes))
+            print("is last piece: ", is_last_piece)
+            print("content length: ", torrent_info.content_length)
+            print("default piece length: ", torrent_info.piece_length)
+            print("actual piece length: ", piece_length)
+            print("chunks to process:", len(chunks))
+            print("last block length: ", piece_length - (16 * 1024 * (len(chunks) - 1)))
+            print("first bits of first chunk :", chunks[0][:10])
+            print("last bits of first chunk :", chunks[0][-10:])
+            print("first bitschunk of last chunk :", chunks[-1][:10])
+            print("last bitschunk of last chunk :", chunks[-1][-10:])
+
+            for idx, chunk in enumerate(chunks):
+                print(f"\nprocessing chunk: {idx + 1}")
+                # Send request message
+                index = int.to_bytes(int(piece_index), length=4)
+                begin = int.to_bytes(chunk[0], length=4)
+                chunk_length = (
+                    len(chunk) - 1
+                    if idx == len(chunks) - 1 and is_last_piece
+                    else len(chunk)
+                )
+                length = int.to_bytes(chunk_length, length=4)
+                print("begin: ", chunk[0])
+                print("length: ", chunk_length)
+                payload = index + begin + length
+                message = (
+                    int.to_bytes(len(payload) + 1, length=4)  # Message length
+                    + int.to_bytes(6, length=1)  # Request type
+                    + payload
+                )
+                writer.write(message)
+                await writer.drain()
+
+                # Receive piece message
+                piece_size = int.from_bytes(await reader.readexactly(4))
+                piece_type = int.from_bytes(await reader.readexactly(1))
+                if piece_type != 0x07:
+                    raise Exception("Expected piece type")
+                data = await reader.readexactly(piece_size - 1)
+                # Skip 4 bytes for the index, 4 bytes for the begin offset
+                # TODO: come back to this when working on a parallel implementation.
+                # We'll need to consider the index & offset to properly align pieces
+                # when putting them back together
+                block = data[8:]
+                print("data start: ", block[:50])
+                print("data end: ", block[-50:])
+                blocks.append(block)
+
+            # Check piece integrity
+            piece = b"".join(blocks)
+            piece_hash = sha1(piece).hexdigest()
+            print("\nvalidating piece hash...")
+            assert (
+                piece_hash in torrent_info.piece_hashes
+            ), f"Expected to find {piece_hash} in {torrent_info.piece_hashes}"
+
+            # Write piece
+            with open(output_dir, "wb") as file:
+                file.write(piece)
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 
