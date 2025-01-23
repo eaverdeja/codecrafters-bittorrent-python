@@ -193,14 +193,14 @@ def chunk_piece(piece_length: int, chunk_size: int) -> list[list[int]]:
     return blocks
 
 
-def parse_download_piece_args():
-    parser = argparse.ArgumentParser(description="Downloads a torrent piece")
+def parse_download_args():
+    parser = argparse.ArgumentParser(description="Downloads a torrent (piece)")
     parser.add_argument(
         "--output_dir",
         "-o",
         type=str,
         nargs="*",
-        help="Output directory. Also contains the torrent filename and piece index as trailing arguments",
+        help="Output directory. Also contains the torrent filename (and piece index) as trailing arguments",
     )
     return parser.parse_args(sys.argv[2:])
 
@@ -266,6 +266,12 @@ async def download_piece_chunk(
     return await reader.readexactly(piece_size - 1)
 
 
+def check_piece_integrity(piece: bytes, torrent_info: TorrentInfo):
+    piece_hash = sha1(piece).hexdigest()
+    if not piece_hash in torrent_info.piece_hashes:
+        raise Exception(f"Expected to find {piece_hash} in {torrent_info.piece_hashes}")
+
+
 async def main():
     command = sys.argv[1]
 
@@ -297,7 +303,7 @@ async def main():
             peer_id, _, _ = await perform_handshake(torrent_filename, peer)
             print(f"Peer ID: {peer_id}")
         case "download_piece":
-            args = parse_download_piece_args()
+            args = parse_download_args()
             output_dir, torrent_filename, piece_index = args.output_dir
 
             # Perform handshake and send initial messages (BITFIELD, UNCHOKE)
@@ -335,17 +341,61 @@ async def main():
                 block = data[8:]
                 blocks.append(block)
 
-            # Check piece integrity
             piece = b"".join(blocks)
-            piece_hash = sha1(piece).hexdigest()
-            if not piece_hash in torrent_info.piece_hashes:
-                raise Exception(
-                    f"Expected to find {piece_hash} in {torrent_info.piece_hashes}"
-                )
+            check_piece_integrity(piece, torrent_info)
 
             # Write piece
             with open(output_dir, "wb") as file:
                 file.write(piece)
+        case "download":
+            args = parse_download_args()
+            output_dir, torrent_filename = args.output_dir
+
+            # Perform handshake and send initial messages (BITFIELD, UNCHOKE)
+            torrent_info, _ = get_torrent_info(torrent_filename)
+            peers = get_peers(torrent_filename)
+            peer_id, reader, writer = await perform_handshake(
+                torrent_filename, peer=peers[0]
+            )
+            await initiate_transfer(reader, writer)
+
+            pieces = []
+            for piece_index, piece_hash in enumerate(torrent_info.piece_hashes):
+                # Create piece chunks
+                blocks: list[bytes] = []
+                is_last_piece = len(torrent_info.piece_hashes) == int(piece_index) + 1
+                piece_length = (
+                    torrent_info.piece_length
+                    if not is_last_piece
+                    else torrent_info.content_length % torrent_info.piece_length
+                )
+                chunks = chunk_piece(piece_length, BLOCK_SIZE)
+                for idx, chunk in enumerate(chunks):
+                    data = await download_piece_chunk(
+                        chunk=chunk,
+                        chunks=chunks,
+                        piece_index=piece_index,
+                        is_last_piece=is_last_piece,
+                        idx=idx,
+                        reader=reader,
+                        writer=writer,
+                    )
+                    # Skip 4 bytes for the index + 4 bytes for the begin offset.
+                    # TODO: come back to this when working on a parallel implementation.
+                    # We'll need to consider the index & offset to properly align pieces
+                    # when putting them back together
+                    # (i.e. b"".join(blocks) probably won't work)
+                    block = data[8:]
+                    blocks.append(block)
+
+                piece = b"".join(blocks)
+                check_piece_integrity(piece, torrent_info)
+
+                pieces.append(piece)
+
+            # Write pieces
+            with open(output_dir, "wb") as file:
+                file.write(b"".join(pieces))
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 
