@@ -12,9 +12,10 @@ PEER_ID = random.randbytes(20)
 
 
 def get_peers_from_file(torrent_filename: str) -> list[str]:
-    torrent_info, bencoded_info = get_torrent_info(torrent_filename)
-    info_hash = sha1(bencoded_info).digest()
-    return _get_peers(torrent_info.tracker_url, info_hash, torrent_info.content_length)
+    torrent_info = get_torrent_info(torrent_filename)
+    return _get_peers(
+        torrent_info.tracker_url, torrent_info.info_hash, torrent_info.content_length
+    )
 
 
 def get_peers_from_magnet(magnet_link: MagnetLink):

@@ -25,11 +25,11 @@ async def main():
             print(json.dumps(decoded_value, default=bytes_to_str))
         case "info":
             torrent_filename = sys.argv[2]
-            torrent_info, bencoded_info = get_torrent_info(torrent_filename)
+            torrent_info = get_torrent_info(torrent_filename)
 
             print(f"Tracker URL: {torrent_info.tracker_url}")
             print(f"Length: {torrent_info.content_length}")
-            print(f"Info Hash: {sha1(bencoded_info).hexdigest()}")
+            print(f"Info Hash: {sha1(torrent_info.bencoded_info).hexdigest()}")
             print(f"Piece Length: {torrent_info.piece_length}")
 
             print("Piece Hashes: ")
@@ -43,9 +43,8 @@ async def main():
             torrent_filename = sys.argv[2]
             peer = sys.argv[3]
 
-            _, bencoded_info = get_torrent_info(torrent_filename)
-            info_hash = sha1(bencoded_info).digest()
-            peer_id, _, _ = await perform_handshake(info_hash, peer)
+            torrent_info = get_torrent_info(torrent_filename)
+            peer_id, _, _ = await perform_handshake(torrent_info.info_hash, peer)
             print(f"Peer ID: {peer_id}")
         case "download_piece":
             args = parse_download_args()
