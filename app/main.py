@@ -2,7 +2,7 @@ from hashlib import sha1
 import json
 import sys
 import asyncio
-
+from urllib.parse import unquote
 
 from .encoding import decode_bencode, bytes_to_str
 from .metainfo import get_torrent_info
@@ -55,6 +55,21 @@ async def main():
             output_dir, torrent_filename = args.output_dir
 
             await download_torrent(torrent_filename, output_dir)
+        case "magnet_parse":
+            # https://en.wikipedia.org/wiki/Magnet_URI_scheme
+            magnet_link = sys.argv[2]
+
+            query = magnet_link.split("?")[1]
+            query_params = {}
+            for param in query.split("&"):
+                key, value = param.split("=")
+                query_params[key] = value
+
+            tracker_url = unquote(query_params["tr"])
+            info_hash = query_params["xt"].split("urn:btih:")[1]
+
+            print(f"Tracker URL: {tracker_url}")
+            print(f"Info Hash: {info_hash}")
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 
