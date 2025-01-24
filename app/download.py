@@ -109,17 +109,26 @@ async def _download_piece(
 ) -> tuple[list[bytes], int]:
     blocks: list[bytes] = []
 
-    response_piece_index = None
+    response_tasks = []
+    semaphore = asyncio.Semaphore()
     for idx, chunk in enumerate(chunks):
-        response = await download_piece_chunk(
-            chunk=chunk,
-            chunks=chunks,
-            piece_index=piece_index,
-            is_last_piece=is_last_piece,
-            idx=idx,
-            reader=reader,
-            writer=writer,
+        task = asyncio.create_task(
+            download_piece_chunk(
+                chunk=chunk,
+                chunks=chunks,
+                piece_index=piece_index,
+                is_last_piece=is_last_piece,
+                idx=idx,
+                reader=reader,
+                writer=writer,
+                semaphore=semaphore,
+            )
         )
+        response_tasks.append(task)
+
+    response_piece_index = None
+    responses = await asyncio.gather(*response_tasks)
+    for response in responses:
         # First 4 bytes from the response represent the piece index
         # - it shouldn't change throughout chunks
         rpi = int.from_bytes(response[:4])
@@ -167,6 +176,7 @@ async def download_piece_chunk(
     idx: int,
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
+    semaphore,
 ):
     # Send request message
     index = int.to_bytes(int(piece_index), length=4)
@@ -189,14 +199,15 @@ async def download_piece_chunk(
     writer.write(message)
     await writer.drain()
 
-    # Receive piece message and return data
-    piece_size = int.from_bytes(await reader.readexactly(4))
-    piece_type = int.from_bytes(await reader.readexactly(1))
-    if piece_type != 0x07:
-        raise Exception("Expected piece type")
+    async with semaphore:
+        # Receive piece message and return data
+        piece_size = int.from_bytes(await reader.readexactly(4))
+        piece_type = int.from_bytes(await reader.readexactly(1))
+        if piece_type != 0x07:
+            raise Exception("Expected piece type")
 
-    # Read the payload
-    return await reader.readexactly(piece_size - 1)
+        # Read the payload
+        return await reader.readexactly(piece_size - 1)
 
 
 def check_piece_integrity(piece: bytes, torrent_info: TorrentInfo):
