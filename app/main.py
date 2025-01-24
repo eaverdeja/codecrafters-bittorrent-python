@@ -3,9 +3,15 @@ import json
 import sys
 import asyncio
 
-from .encoding import decode_bencode, bytes_to_str
+from .encoding import decode_bencode, bytes_to_str, encode_bencode
 from .metainfo import get_torrent_info
-from .peers import get_peers_from_file, get_peers_from_magnet, perform_handshake
+from .peers import (
+    get_peers_from_file,
+    get_peers_from_magnet,
+    perform_handshake,
+    perform_metadata_extension_handshake,
+    receive_bitfield_message,
+)
 from .download import (
     download_torrent,
     download_torrent_piece,
@@ -44,7 +50,7 @@ async def main():
             peer = sys.argv[3]
 
             torrent_info = get_torrent_info(torrent_filename)
-            peer_id, _, _ = await perform_handshake(torrent_info.info_hash, peer)
+            peer_id, _, _, _ = await perform_handshake(torrent_info.info_hash, peer)
             print(f"Peer ID: {peer_id}")
         case "download_piece":
             args = parse_download_args()
@@ -70,7 +76,17 @@ async def main():
             peers = get_peers_from_magnet(magnet_link)
             peer = peers[0]
 
-            peer_id, _, _ = await perform_handshake(magnet_link.info_hash_bytes, peer)
+            peer_id, extensions, reader, writer = await perform_handshake(
+                magnet_link.info_hash_bytes, peer
+            )
+            # Note: for this challenge, we don't need to send
+            # the bitfield message, but it would be part of the flow here
+            await receive_bitfield_message(reader)
+
+            # Extend!
+            if extensions.supports_metadata:
+                await perform_metadata_extension_handshake(reader, writer)
+
             print(f"Peer ID: {peer_id}")
         case _:
             raise NotImplementedError(f"Unknown command {command}")

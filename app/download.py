@@ -98,7 +98,7 @@ async def _download_piece_from_peer(
 ):
     print(f"Performing handshake with peer {peer}")
     torrent_info = get_torrent_info(torrent_filename)
-    _, reader, writer = await perform_handshake(torrent_info.info_hash, peer)
+    _, _, reader, writer = await perform_handshake(torrent_info.info_hash, peer)
     try:
         await initiate_transfer(reader, writer)
         print(f"Handshake succeeded with peer {peer}")

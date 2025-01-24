@@ -1,14 +1,24 @@
 import asyncio
 import requests
 import random
-from hashlib import sha1
-from itertools import zip_longest
+from dataclasses import dataclass
 
 from .magnet import MagnetLink
-from .encoding import decode_bencode
+from .encoding import decode_bencode, encode_bencode
 from .metainfo import get_torrent_info
 
 PEER_ID = random.randbytes(20)
+PROTOCOL_STRING = "BitTorrent protocol"
+RESERVED_BYTES_LENGTH = 8
+METADATA_EXTENSION_BIT_POSITION = 20
+EXTENSION_MESSAGE_ID = 20
+EXTENSION_HANDSHAKE_ID = 0
+METADATA_EXTENSION_ID = 42
+
+
+@dataclass
+class PeerExtensions:
+    supports_metadata: bool
 
 
 def get_peers_from_file(torrent_filename: str) -> list[str]:
@@ -54,7 +64,7 @@ def _get_peers(tracker_url: str, info_hash: str, content_length: int = 999):
 
 async def perform_handshake(
     info_hash: str, peer: str
-) -> tuple[str, asyncio.StreamReader, asyncio.StreamWriter]:
+) -> tuple[str, PeerExtensions, asyncio.StreamReader, asyncio.StreamWriter]:
     peer_address, peer_port = peer.split(":")
     reader, writer = await asyncio.open_connection(
         host=peer_address,
@@ -62,13 +72,13 @@ async def perform_handshake(
     )
 
     # Reserved bytes
-    reserved_bytes = b"\x00" * 8
+    reserved_bytes = b"\x00" * RESERVED_BYTES_LENGTH
     modified_bytes = _add_magnet_link_extension(reserved_bytes)
 
     # Handshake request
     message = (
         int.to_bytes(19)
-        + "BitTorrent protocol".encode()
+        + PROTOCOL_STRING.encode()
         + modified_bytes
         + info_hash
         + PEER_ID
@@ -78,20 +88,31 @@ async def perform_handshake(
 
     # Handshake response
     data = await reader.readexactly(len(message))
+    # Protocol string
+    protocol_string_size = data[0]
+    protocol_string = data[1 : protocol_string_size + 1].decode()
+    assert (
+        protocol_string == PROTOCOL_STRING
+    ), f"Unexpected protocol string: {protocol_string}"
+
+    # Reserved bytes
+    offset = protocol_string_size + 1
+    peer_reserved_bytes = data[offset : offset + RESERVED_BYTES_LENGTH]
+    extensions = PeerExtensions(
+        supports_metadata=_is_bit_set(
+            peer_reserved_bytes, METADATA_EXTENSION_BIT_POSITION
+        )
+    )
+
+    # Peer ID
     encoded_peer_id = data[len(message) - len(PEER_ID) :]
     peer_id = "".join(f"{piece:02x}" for piece in encoded_peer_id)
 
-    return peer_id, reader, writer
+    return peer_id, extensions, reader, writer
 
 
 async def initiate_transfer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    # Receive bitfield message
-    bitfield_size = int.from_bytes(await reader.readexactly(4))
-    bitfield_type = int.from_bytes(await reader.readexactly(1))
-    if bitfield_type != 0x05:
-        raise Exception("Expected bitfield type")
-    # Read the rest of the bitfield payload, but ignore it for now
-    _bitfield_payload = await reader.read(bitfield_size - 1)
+    await receive_bitfield_message(reader)
 
     # Send interested message
     # Payload size is 0, interested type is 2
@@ -107,9 +128,38 @@ async def initiate_transfer(reader: asyncio.StreamReader, writer: asyncio.Stream
         raise Exception("Expected unchoke type with size 1")
 
 
+async def receive_bitfield_message(reader: asyncio.StreamReader):
+    # Receive bitfield message
+    bitfield_size = int.from_bytes(await reader.readexactly(4))
+    bitfield_type = int.from_bytes(await reader.readexactly(1))
+    if bitfield_type != 0x05:
+        raise Exception("Expected bitfield type")
+    # Return the rest of the bitfield payload
+    return await reader.read(bitfield_size - 1)
+
+
+async def perform_metadata_extension_handshake(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+):
+    # https://www.bittorrent.org/beps/bep_0010.html#handshake-message
+    # Send extension handshake
+    message_id = int.to_bytes(EXTENSION_MESSAGE_ID, length=1)
+    extension_message_id = int.to_bytes(EXTENSION_HANDSHAKE_ID, length=1)
+    extension_payload = encode_bencode({"m": {"ut_metadata": METADATA_EXTENSION_ID}})
+    payload = extension_message_id + extension_payload
+    length = int.to_bytes(len(message_id) + len(payload), length=4)
+    message = length + message_id + payload
+
+    writer.write(message)
+    await writer.drain()
+
+    # Receive extension handshake
+    pass
+
+
 def _add_magnet_link_extension(reserved_bytes: bytes) -> bytes:
     # 20th bit announces support for magnet link extension
-    bit_position = 20
+    bit_position = METADATA_EXTENSION_BIT_POSITION
     # Which byte has the 20th bit?
     byte_index = len(reserved_bytes) - 1 - (bit_position // 8)
     # Which bit in that byte corresponds to the 20th bit?
@@ -118,7 +168,17 @@ def _add_magnet_link_extension(reserved_bytes: bytes) -> bytes:
     # Use bytearray to allow for update of a specific byte
     modified_bytes = bytearray(reserved_bytes)
     # Create a mask with the bit offset
-    # and apply it to the correct byte
+    # and apply it with |= to the correct byte
     modified_bytes[byte_index] |= 1 << bit_offset
 
     return bytes(modified_bytes)
+
+
+def _is_bit_set(byte_sequence: bytes, bit_position: int) -> bool:
+    # Which byte should we look at?
+    byte_index = len(byte_sequence) - 1 - (bit_position // 8)
+    # Which bit in that byte is the relevant one?
+    bit_offset = bit_position % 8
+    # Create a mask and apply it with
+    # & to get our answer
+    return bool(byte_sequence[byte_index] & (1 << bit_offset))
