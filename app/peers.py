@@ -140,7 +140,7 @@ async def receive_bitfield_message(reader: asyncio.StreamReader):
 
 async def perform_metadata_extension_handshake(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-):
+) -> int:
     # https://www.bittorrent.org/beps/bep_0010.html#handshake-message
     # Send extension handshake
     message_id = int.to_bytes(EXTENSION_MESSAGE_ID, length=1)
@@ -149,12 +149,28 @@ async def perform_metadata_extension_handshake(
     payload = extension_message_id + extension_payload
     length = int.to_bytes(len(message_id) + len(payload), length=4)
     message = length + message_id + payload
-
     writer.write(message)
     await writer.drain()
 
     # Receive extension handshake
-    pass
+    extension_handshake_size = int.from_bytes(await reader.readexactly(4))
+    extension_handshake_type = int.from_bytes(await reader.readexactly(1))
+    if extension_handshake_type != EXTENSION_MESSAGE_ID:
+        raise Exception(
+            f"Expected extension handshake type, got {extension_handshake_type}"
+        )
+
+    # Read the extension handshake payload
+    extension_handshake_id = int.from_bytes(await reader.readexactly(1))
+    if extension_handshake_id != EXTENSION_HANDSHAKE_ID:
+        raise Exception(
+            f"Expected extension handshake ID, got {extension_handshake_id}"
+        )
+    extension_handshake_payload, _ = decode_bencode(
+        await reader.read(extension_handshake_size - 1)
+    )
+    # Grab the peer's ID for the ut_metadata extension
+    return extension_handshake_payload["m"]["ut_metadata"]
 
 
 def _add_magnet_link_extension(reserved_bytes: bytes) -> bytes:

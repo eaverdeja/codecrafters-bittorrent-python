@@ -85,9 +85,12 @@ async def main():
 
             # Extend!
             if extensions.supports_metadata:
-                await perform_metadata_extension_handshake(reader, writer)
+                peer_metadata_extension_id = await perform_metadata_extension_handshake(
+                    reader, writer
+                )
 
             print(f"Peer ID: {peer_id}")
+            print(f"Peer Metadata Extension ID: {peer_metadata_extension_id}")
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 
