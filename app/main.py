@@ -2,16 +2,16 @@ from hashlib import sha1
 import json
 import sys
 import asyncio
-from urllib.parse import unquote
 
 from .encoding import decode_bencode, bytes_to_str
 from .metainfo import get_torrent_info
-from .peers import get_peers, perform_handshake
+from .peers import get_peers_from_file, get_peers_from_magnet, perform_handshake
 from .download import (
     download_torrent,
     download_torrent_piece,
     parse_download_args,
 )
+from .magnet import MagnetLink
 
 
 async def main():
@@ -37,12 +37,15 @@ async def main():
                 print(piece_hash)
         case "peers":
             torrent_filename = sys.argv[2]
-            peers = get_peers(torrent_filename)
+            peers = get_peers_from_file(torrent_filename)
             print(peers)
         case "handshake":
             torrent_filename = sys.argv[2]
             peer = sys.argv[3]
-            peer_id, _, _ = await perform_handshake(torrent_filename, peer)
+
+            _, bencoded_info = get_torrent_info(torrent_filename)
+            info_hash = sha1(bencoded_info).digest()
+            peer_id, _, _ = await perform_handshake(info_hash, peer)
             print(f"Peer ID: {peer_id}")
         case "download_piece":
             args = parse_download_args()
@@ -56,20 +59,20 @@ async def main():
 
             await download_torrent(torrent_filename, output_dir)
         case "magnet_parse":
-            # https://en.wikipedia.org/wiki/Magnet_URI_scheme
-            magnet_link = sys.argv[2]
+            raw_magnet_link = sys.argv[2]
 
-            query = magnet_link.split("?")[1]
-            query_params = {}
-            for param in query.split("&"):
-                key, value = param.split("=")
-                query_params[key] = value
+            magnet_link = MagnetLink.parse(raw_magnet_link)
+            print(f"Tracker URL: {magnet_link.tracker_url}")
+            print(f"Info Hash: {magnet_link.info_hash}")
+        case "magnet_handshake":
+            raw_magnet_link = sys.argv[2]
 
-            tracker_url = unquote(query_params["tr"])
-            info_hash = query_params["xt"].split("urn:btih:")[1]
+            magnet_link = MagnetLink.parse(raw_magnet_link)
+            peers = get_peers_from_magnet(magnet_link)
+            peer = peers[0]
 
-            print(f"Tracker URL: {tracker_url}")
-            print(f"Info Hash: {info_hash}")
+            peer_id, _, _ = await perform_handshake(magnet_link.info_hash_bytes, peer)
+            print(f"Peer ID: {peer_id}")
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 

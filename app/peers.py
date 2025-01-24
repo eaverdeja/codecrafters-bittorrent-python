@@ -2,25 +2,36 @@ import asyncio
 import requests
 import random
 from hashlib import sha1
+from itertools import zip_longest
 
+from .magnet import MagnetLink
 from .encoding import decode_bencode
 from .metainfo import get_torrent_info
 
 PEER_ID = random.randbytes(20)
 
 
-def get_peers(torrent_filename: str) -> list[str]:
-    peers = []
+def get_peers_from_file(torrent_filename: str) -> list[str]:
     torrent_info, bencoded_info = get_torrent_info(torrent_filename)
+    info_hash = sha1(bencoded_info).digest()
+    return _get_peers(torrent_info.tracker_url, info_hash, torrent_info.content_length)
+
+
+def get_peers_from_magnet(magnet_link: MagnetLink):
+    return _get_peers(magnet_link.tracker_url, magnet_link.info_hash_bytes)
+
+
+def _get_peers(tracker_url: str, info_hash: str, content_length: int = 999):
+    peers = []
     response = requests.get(
-        torrent_info.tracker_url,
+        tracker_url,
         params={
-            "info_hash": sha1(bencoded_info).digest(),
+            "info_hash": info_hash,
             "peer_id": PEER_ID,
             "port": 6881,
             "uploaded": 0,
             "downloaded": 0,
-            "left": torrent_info.content_length,
+            "left": content_length,
             "compact": 1,
         },
     )
@@ -41,21 +52,24 @@ def get_peers(torrent_filename: str) -> list[str]:
 
 
 async def perform_handshake(
-    torrent_filename: str, peer: str
+    info_hash: str, peer: str
 ) -> tuple[str, asyncio.StreamReader, asyncio.StreamWriter]:
-    torrent_info, bencoded_info = get_torrent_info(torrent_filename)
     peer_address, peer_port = peer.split(":")
     reader, writer = await asyncio.open_connection(
         host=peer_address,
         port=peer_port,
     )
 
+    # Reserved bytes
+    reserved_bytes = b"\x00" * 8
+    modified_bytes = _add_magnet_link_extension(reserved_bytes)
+
     # Handshake request
     message = (
         int.to_bytes(19)
         + "BitTorrent protocol".encode()
-        + bytes().join(int.to_bytes(0) for _ in range(8))
-        + sha1(bencoded_info).digest()
+        + modified_bytes
+        + info_hash
         + PEER_ID
     )
     writer.write(message)
@@ -90,3 +104,20 @@ async def initiate_transfer(reader: asyncio.StreamReader, writer: asyncio.Stream
     unchoke_type = int.from_bytes(await reader.readexactly(1))
     if unchoke_type != 0x01 or unchoke_size != 0x01:
         raise Exception("Expected unchoke type with size 1")
+
+
+def _add_magnet_link_extension(reserved_bytes: bytes) -> bytes:
+    # 20th bit announces support for magnet link extension
+    bit_position = 20
+    # Which byte has the 20th bit?
+    byte_index = len(reserved_bytes) - 1 - (bit_position // 8)
+    # Which bit in that byte corresponds to the 20th bit?
+    bit_offset = bit_position % 8
+
+    # Use bytearray to allow for update of a specific byte
+    modified_bytes = bytearray(reserved_bytes)
+    # Create a mask with the bit offset
+    # and apply it to the correct byte
+    modified_bytes[byte_index] |= 1 << bit_offset
+    modified_bytes = bytes(modified_bytes)
+    return modified_bytes

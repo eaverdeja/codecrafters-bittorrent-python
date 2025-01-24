@@ -5,7 +5,7 @@ from hashlib import sha1
 import random
 
 from .metainfo import get_torrent_info, TorrentInfo
-from .peers import get_peers, perform_handshake, initiate_transfer
+from .peers import get_peers_from_file, perform_handshake, initiate_transfer
 from .constants import BLOCK_SIZE
 
 
@@ -23,7 +23,7 @@ def parse_download_args():
 
 async def download_torrent(torrent_filename, output_dir):
     torrent_info, _ = get_torrent_info(torrent_filename)
-    peers = get_peers(torrent_filename)
+    peers = get_peers_from_file(torrent_filename)
     random.shuffle(peers)
 
     piece_tasks = []
@@ -80,7 +80,7 @@ async def download_torrent_piece(
 ):
     # Get metainfo and choose a peer
     torrent_info, _ = get_torrent_info(torrent_filename)
-    peers = get_peers(torrent_filename)
+    peers = get_peers_from_file(torrent_filename)
     peer = peers[piece_index % len(peers)]
 
     # Download piece
@@ -97,7 +97,9 @@ async def _download_piece_from_peer(
     torrent_filename: str, torrent_info: TorrentInfo, peer: str, piece_index: int
 ):
     print(f"Performing handshake with peer {peer}")
-    _, reader, writer = await perform_handshake(torrent_filename, peer)
+    _, bencoded_info = get_torrent_info(torrent_filename)
+    info_hash = sha1(bencoded_info).digest()
+    _, reader, writer = await perform_handshake(info_hash, peer)
     try:
         await initiate_transfer(reader, writer)
         print(f"Handshake succeeded with peer {peer}")
