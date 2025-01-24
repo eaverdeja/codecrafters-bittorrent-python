@@ -120,5 +120,5 @@ def _add_magnet_link_extension(reserved_bytes: bytes) -> bytes:
     # Create a mask with the bit offset
     # and apply it to the correct byte
     modified_bytes[byte_index] |= 1 << bit_offset
-    modified_bytes = bytes(modified_bytes)
-    return modified_bytes
+
+    return bytes(modified_bytes)
