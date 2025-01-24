@@ -9,8 +9,19 @@ from .peers import get_peers, perform_handshake, initiate_transfer
 from .constants import BLOCK_SIZE
 
 
+def parse_download_args():
+    parser = argparse.ArgumentParser(description="Downloads a torrent (piece)")
+    parser.add_argument(
+        "--output_dir",
+        "-o",
+        type=str,
+        nargs="*",
+        help="Output directory. Also contains the torrent filename (and piece index) as trailing arguments",
+    )
+    return parser.parse_args(sys.argv[2:])
+
+
 async def download_torrent(torrent_filename, output_dir):
-    # Perform handshake and send initial messages (BITFIELD, UNCHOKE)
     torrent_info, _ = get_torrent_info(torrent_filename)
     peers = get_peers(torrent_filename)
     random.shuffle(peers)
@@ -64,6 +75,24 @@ async def download_torrent(torrent_filename, output_dir):
         file.write(b"".join(valid_pieces))
 
 
+async def download_torrent_piece(
+    torrent_filename: str, piece_index: int, output_dir: str
+):
+    # Get metainfo and choose a peer
+    torrent_info, _ = get_torrent_info(torrent_filename)
+    peers = get_peers(torrent_filename)
+    peer = peers[piece_index % len(peers)]
+
+    # Download piece
+    piece, _ = await _download_piece_from_peer(
+        torrent_filename, torrent_info, peer, piece_index
+    )
+
+    # Write piece
+    with open(output_dir, "wb") as file:
+        file.write(piece)
+
+
 async def _download_piece_from_peer(
     torrent_filename: str, torrent_info: TorrentInfo, peer: str, piece_index: int
 ):
@@ -79,7 +108,7 @@ async def _download_piece_from_peer(
             if not is_last_piece
             else torrent_info.content_length % torrent_info.piece_length
         )
-        chunks = chunk_piece(piece_length, BLOCK_SIZE)
+        chunks = _chunk_piece(piece_length, BLOCK_SIZE)
 
         print("Downloading piece")
         print("# of chunks", len(chunks))
@@ -88,7 +117,7 @@ async def _download_piece_from_peer(
         )
 
         piece = b"".join(blocks)
-        check_piece_integrity(piece, torrent_info)
+        _check_piece_integrity(piece, torrent_info)
         print(f"Integrity verified for piece [{piece_index}]")
 
         return piece, response_piece_idx
@@ -113,7 +142,7 @@ async def _download_piece(
     semaphore = asyncio.Semaphore()
     for idx, chunk in enumerate(chunks):
         task = asyncio.create_task(
-            download_piece_chunk(
+            _download_piece_chunk(
                 chunk=chunk,
                 chunks=chunks,
                 piece_index=piece_index,
@@ -146,7 +175,7 @@ async def _download_piece(
     return blocks, response_piece_index
 
 
-def chunk_piece(piece_length: int, chunk_size: int) -> list[list[int]]:
+def _chunk_piece(piece_length: int, chunk_size: int) -> list[list[int]]:
     blocks = []
     for start in range(0, piece_length, chunk_size):
         end = min(start + chunk_size - 1, piece_length)
@@ -156,19 +185,7 @@ def chunk_piece(piece_length: int, chunk_size: int) -> list[list[int]]:
     return blocks
 
 
-def parse_download_args():
-    parser = argparse.ArgumentParser(description="Downloads a torrent (piece)")
-    parser.add_argument(
-        "--output_dir",
-        "-o",
-        type=str,
-        nargs="*",
-        help="Output directory. Also contains the torrent filename (and piece index) as trailing arguments",
-    )
-    return parser.parse_args(sys.argv[2:])
-
-
-async def download_piece_chunk(
+async def _download_piece_chunk(
     chunk: list[int],
     chunks: list[list[int]],
     piece_index: int,
@@ -210,7 +227,7 @@ async def download_piece_chunk(
         return await reader.readexactly(piece_size - 1)
 
 
-def check_piece_integrity(piece: bytes, torrent_info: TorrentInfo):
+def _check_piece_integrity(piece: bytes, torrent_info: TorrentInfo):
     piece_hash = sha1(piece).hexdigest()
     if not piece_hash in torrent_info.piece_hashes:
         raise Exception(f"Expected to find {piece_hash} in {torrent_info.piece_hashes}")
