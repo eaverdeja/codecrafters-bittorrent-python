@@ -43,8 +43,15 @@ async def download_torrent(torrent_filename, output_dir):
     for piece_index, _piece_hash in enumerate(torrent_info.piece_hashes):
         # Choose a peer
         peer = peers[piece_index % len(peers)]
+
+        torrent_info = get_torrent_info(torrent_filename)
+        _, _, reader, writer = await perform_handshake(torrent_info.info_hash, peer)
+
+        # Download piece
+        await receive_bitfield_message(reader)
+        await initiate_transfer(reader, writer)
         task = asyncio.create_task(
-            download_piece_from_peer(torrent_filename, torrent_info, peer, piece_index)
+            download_piece_from_peer(reader, writer, torrent_info, peer, piece_index)
         )
         piece_tasks.append(task)
 
@@ -88,10 +95,8 @@ async def download_torrent_piece(
     peers = get_peers_from_file(torrent_filename)
     peer = peers[piece_index % len(peers)]
 
-    print(f"Performing handshake with peer {peer}")
     torrent_info = get_torrent_info(torrent_filename)
     _, _, reader, writer = await perform_handshake(torrent_info.info_hash, peer)
-    print(f"Handshake succeeded with peer {peer}")
 
     # Download piece
     await receive_bitfield_message(reader)

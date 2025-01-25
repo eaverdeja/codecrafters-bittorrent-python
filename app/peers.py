@@ -65,6 +65,7 @@ def _get_peers(tracker_url: str, info_hash: str, content_length: int = 999):
 async def perform_handshake(
     info_hash: str, peer: str
 ) -> tuple[str, PeerExtensions, asyncio.StreamReader, asyncio.StreamWriter]:
+    print(f"Performing handshake with peer {peer}")
     peer_address, peer_port = peer.split(":")
     reader, writer = await asyncio.open_connection(
         host=peer_address,
@@ -108,6 +109,7 @@ async def perform_handshake(
     encoded_peer_id = data[len(message) - len(PEER_ID) :]
     peer_id = "".join(f"{piece:02x}" for piece in encoded_peer_id)
 
+    print(f"Handshake succeeded with peer {peer}")
     return peer_id, extensions, reader, writer
 
 
