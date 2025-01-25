@@ -44,7 +44,7 @@ async def download_torrent(torrent_filename, output_dir):
         # Choose a peer
         peer = peers[piece_index % len(peers)]
         task = asyncio.create_task(
-            _download_piece_from_peer(torrent_filename, torrent_info, peer, piece_index)
+            download_piece_from_peer(torrent_filename, torrent_info, peer, piece_index)
         )
         piece_tasks.append(task)
 
