@@ -4,7 +4,7 @@ import sys
 import asyncio
 
 from .encoding import decode_bencode, bytes_to_str, encode_bencode
-from .metainfo import get_torrent_info
+from .metainfo import TorrentInfo, get_torrent_info
 from .peers import (
     get_peers_from_file,
     get_peers_from_magnet,
@@ -102,18 +102,35 @@ async def main():
             peer_id, extensions, reader, writer = await perform_handshake(
                 magnet_link.info_hash_bytes, peer
             )
-            # Note: for this challenge, we don't need to send
-            # the bitfield message, but it would be part of the flow here
             await receive_bitfield_message(reader)
 
-            # Extend!
             if extensions.supports_metadata:
                 peer_metadata_extension_id = await perform_metadata_extension_handshake(
                     reader, writer
                 )
-                await send_metadata_request_message(
+                metadata_info = await send_metadata_request_message(
                     peer_metadata_extension_id, reader, writer
                 )
+                torrent_info = TorrentInfo(
+                    tracker_url=magnet_link.tracker_url,
+                    content_length=metadata_info["length"],
+                    piece_length=metadata_info["piece length"],
+                    pieces=metadata_info["pieces"],
+                    bencoded_info=encode_bencode(metadata_info),
+                )
+
+                assert (
+                    magnet_link.info_hash_bytes == torrent_info.info_hash
+                ), "Info hashes don't match!"
+
+                print(f"Tracker URL: {torrent_info.tracker_url}")
+                print(f"Length: {torrent_info.content_length}")
+                print(f"Info Hash: {magnet_link.info_hash}")
+                print(f"Piece Length: {torrent_info.piece_length}")
+                print("Piece hashes:")
+                for piece_hash in torrent_info.piece_hashes:
+                    print(piece_hash)
+
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 

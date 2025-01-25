@@ -178,7 +178,7 @@ async def send_metadata_request_message(
     reader: asyncio.StreamReader,
     writer: asyncio.StreamWriter,
 ):
-    # Send metadata request
+    # Send metadata request message
     message_id = int.to_bytes(EXTENSION_MESSAGE_ID, length=1)
     extension_message_id = int.to_bytes(peer_metadata_extension_id, length=1)
     extension_payload = encode_bencode({"msg_type": 0, "piece": 0})
@@ -187,6 +187,25 @@ async def send_metadata_request_message(
     message = length + message_id + payload
     writer.write(message)
     await writer.drain()
+
+    # Receive data message
+    data_message_size = int.from_bytes(await reader.readexactly(4))
+    data_message_type = int.from_bytes(await reader.readexactly(1))
+    if data_message_type != EXTENSION_MESSAGE_ID:
+        raise Exception(f"Expected extension message ID, got {data_message_type}")
+    received_peer_metadata_extension_id = int.from_bytes(await reader.readexactly(1))
+    if received_peer_metadata_extension_id != METADATA_EXTENSION_ID:
+        raise Exception("Peer metadata extension IDs don't match!")
+
+    data_message_payload = await reader.readexactly(data_message_size - 2)
+    # The first variable sized part of the payload is the metadata info dict
+    # It would be relevant if the metadata was split into several pieces
+    _, bytes_read = decode_bencode(data_message_payload)
+    # Next is the actual metadata piece contents.
+    # In our case, it's the entire metadata info
+    metadata_info, _ = decode_bencode(data_message_payload[bytes_read:])
+
+    return metadata_info
 
 
 def _add_magnet_link_extension(reserved_bytes: bytes) -> bytes:

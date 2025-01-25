@@ -2,7 +2,7 @@
 #
 # - decode_bencode(b"5:hello") -> b"hello", 7
 # - decode_bencode(b"10:hello12345") -> b"hello12345", 13
-def decode_bencode(bencode: bytes, pos=0) -> tuple[bytes, int]:
+def decode_bencode(bencode: bytes, pos=0) -> tuple[bytes | list | dict, int]:
     char_at_pos = chr(bencode[pos])
     if char_at_pos == "l":  # lists
         items = []
