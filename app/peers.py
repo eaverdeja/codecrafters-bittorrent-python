@@ -3,7 +3,7 @@ import requests
 import random
 from dataclasses import dataclass
 
-from .magnet import MagnetLink
+from .dataclasses import MagnetLink
 from .encoding import decode_bencode, encode_bencode
 from .metainfo import get_torrent_info
 
@@ -112,8 +112,6 @@ async def perform_handshake(
 
 
 async def initiate_transfer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-    await receive_bitfield_message(reader)
-
     # Send interested message
     # Payload size is 0, interested type is 2
     # The message length (4 bytes) should account for the type byte

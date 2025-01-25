@@ -5,7 +5,12 @@ from hashlib import sha1
 import random
 
 from .metainfo import get_torrent_info, TorrentInfo
-from .peers import get_peers_from_file, perform_handshake, initiate_transfer
+from .peers import (
+    get_peers_from_file,
+    perform_handshake,
+    initiate_transfer,
+    receive_bitfield_message,
+)
 from .constants import BLOCK_SIZE
 
 
@@ -16,7 +21,7 @@ def parse_download_args():
         "-o",
         type=str,
         nargs="*",
-        help="Output directory. Also contains the torrent filename (and piece index) as trailing arguments",
+        help="Output directory. Also contains the torrent filename or magnet link (and piece index) as trailing arguments",
     )
     return parser.parse_args(sys.argv[2:])
 
@@ -83,9 +88,16 @@ async def download_torrent_piece(
     peers = get_peers_from_file(torrent_filename)
     peer = peers[piece_index % len(peers)]
 
+    print(f"Performing handshake with peer {peer}")
+    torrent_info = get_torrent_info(torrent_filename)
+    _, _, reader, writer = await perform_handshake(torrent_info.info_hash, peer)
+    print(f"Handshake succeeded with peer {peer}")
+
     # Download piece
-    piece, _ = await _download_piece_from_peer(
-        torrent_filename, torrent_info, peer, piece_index
+    await receive_bitfield_message(reader)
+    await initiate_transfer(reader, writer)
+    piece, _ = await download_piece_from_peer(
+        reader, writer, torrent_info, peer, piece_index
     )
 
     # Write piece
@@ -93,16 +105,14 @@ async def download_torrent_piece(
         file.write(piece)
 
 
-async def _download_piece_from_peer(
-    torrent_filename: str, torrent_info: TorrentInfo, peer: str, piece_index: int
+async def download_piece_from_peer(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    torrent_info: TorrentInfo,
+    peer: str,
+    piece_index: int,
 ):
-    print(f"Performing handshake with peer {peer}")
-    torrent_info = get_torrent_info(torrent_filename)
-    _, _, reader, writer = await perform_handshake(torrent_info.info_hash, peer)
     try:
-        await initiate_transfer(reader, writer)
-        print(f"Handshake succeeded with peer {peer}")
-
         is_last_piece = len(torrent_info.piece_hashes) == int(piece_index) + 1
         piece_length = (
             torrent_info.piece_length

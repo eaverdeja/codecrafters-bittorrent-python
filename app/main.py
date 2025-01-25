@@ -4,21 +4,22 @@ import sys
 import asyncio
 
 from .encoding import decode_bencode, bytes_to_str, encode_bencode
-from .metainfo import TorrentInfo, get_torrent_info
+from .metainfo import get_torrent_info
 from .peers import (
     get_peers_from_file,
     get_peers_from_magnet,
+    initiate_transfer,
     perform_handshake,
     perform_metadata_extension_handshake,
     receive_bitfield_message,
-    send_metadata_request_message,
 )
 from .download import (
+    download_piece_from_peer,
     download_torrent,
     download_torrent_piece,
     parse_download_args,
 )
-from .magnet import MagnetLink
+from .magnet import MagnetLink, get_torrent_info_from_magnet_link
 
 
 async def main():
@@ -94,43 +95,42 @@ async def main():
             print(f"Peer Metadata Extension ID: {peer_metadata_extension_id}")
         case "magnet_info":
             raw_magnet_link = sys.argv[2]
+            magnet_link = MagnetLink.parse(raw_magnet_link)
+            torrent_info, _, _, _ = await get_torrent_info_from_magnet_link(magnet_link)
+
+            assert (
+                magnet_link.info_hash_bytes == torrent_info.info_hash
+            ), "Info hashes don't match!"
+
+            print(f"Tracker URL: {torrent_info.tracker_url}")
+            print(f"Length: {torrent_info.content_length}")
+            print(f"Info Hash: {magnet_link.info_hash}")
+            print(f"Piece Length: {torrent_info.piece_length}")
+            print("Piece hashes:")
+            for piece_hash in torrent_info.piece_hashes:
+                print(piece_hash)
+        case "magnet_download_piece":
+            args = parse_download_args()
+            output_dir, raw_magnet_link, piece_index = args.output_dir
+            piece_index = int(piece_index)
 
             magnet_link = MagnetLink.parse(raw_magnet_link)
-            peers = get_peers_from_magnet(magnet_link)
-            peer = peers[0]
-
-            peer_id, extensions, reader, writer = await perform_handshake(
-                magnet_link.info_hash_bytes, peer
+            torrent_info, peer, reader, writer = (
+                await get_torrent_info_from_magnet_link(magnet_link)
             )
-            await receive_bitfield_message(reader)
 
-            if extensions.supports_metadata:
-                peer_metadata_extension_id = await perform_metadata_extension_handshake(
-                    reader, writer
-                )
-                metadata_info = await send_metadata_request_message(
-                    peer_metadata_extension_id, reader, writer
-                )
-                torrent_info = TorrentInfo(
-                    tracker_url=magnet_link.tracker_url,
-                    content_length=metadata_info["length"],
-                    piece_length=metadata_info["piece length"],
-                    pieces=metadata_info["pieces"],
-                    bencoded_info=encode_bencode(metadata_info),
-                )
+            await initiate_transfer(reader, writer)
+            piece, piece_index = await download_piece_from_peer(
+                reader=reader,
+                writer=writer,
+                torrent_info=torrent_info,
+                peer=peer,
+                piece_index=piece_index,
+            )
 
-                assert (
-                    magnet_link.info_hash_bytes == torrent_info.info_hash
-                ), "Info hashes don't match!"
-
-                print(f"Tracker URL: {torrent_info.tracker_url}")
-                print(f"Length: {torrent_info.content_length}")
-                print(f"Info Hash: {magnet_link.info_hash}")
-                print(f"Piece Length: {torrent_info.piece_length}")
-                print("Piece hashes:")
-                for piece_hash in torrent_info.piece_hashes:
-                    print(piece_hash)
-
+            # Write piece
+            with open(output_dir, "wb") as file:
+                file.write(piece)
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 
