@@ -4,9 +4,13 @@ import asyncio
 from hashlib import sha1
 import random
 
+from app.dataclasses import MagnetLink
+from app.magnet import get_torrent_info_from_magnet_link
+
 from .metainfo import get_torrent_info, TorrentInfo
 from .peers import (
     get_peers_from_file,
+    get_peers_from_magnet,
     perform_handshake,
     initiate_transfer,
     receive_bitfield_message,
@@ -26,7 +30,7 @@ def parse_download_args():
     return parser.parse_args(sys.argv[2:])
 
 
-async def download_torrent(torrent_filename, output_dir):
+async def download_torrent_from_file(torrent_filename: str, output_dir: str):
     torrent_info = get_torrent_info(torrent_filename)
     peers = get_peers_from_file(torrent_filename)
     random.shuffle(peers)
@@ -49,6 +53,68 @@ async def download_torrent(torrent_filename, output_dir):
 
         # Download piece
         await receive_bitfield_message(reader)
+        await initiate_transfer(reader, writer)
+        task = asyncio.create_task(
+            download_piece_from_peer(reader, writer, torrent_info, peer, piece_index)
+        )
+        piece_tasks.append(task)
+
+        # Are all peers occupied? Then wait for downloads to
+        # finish before requesting for more pieces
+        if len(piece_tasks) == len(peers):
+            results = await asyncio.gather(*[piece_tasks.pop() for _ in peers])
+            for result in results:
+                piece, piece_index = result
+                pieces[piece_index] = piece
+
+    # Gather remaining tasks
+    if len(piece_tasks) > 0:
+        results = await asyncio.gather(*piece_tasks)
+        for result in results:
+            piece, piece_index = result
+            pieces[piece_index] = piece
+
+    print("\nFinished downloading pieces")
+
+    # Sort pieces by their indexes
+    sorted_pieces = dict(sorted(pieces.items())).values()
+
+    # Validate that all tasks succeeded
+    valid_pieces = [p for p in sorted_pieces if p is not None]
+    if len(valid_pieces) != len(torrent_info.piece_hashes):
+        raise Exception(
+            f"Could not download all pieces. Got {len(valid_pieces)} expected {len(torrent_info.piece_hashes)}"
+        )
+
+    # Write pieces
+    with open(output_dir, "wb") as file:
+        file.write(b"".join(valid_pieces))
+
+
+async def download_torrent_from_magnet(magnet_link: MagnetLink, output_dir: str):
+    torrent_info, _, _, _ = await get_torrent_info_from_magnet_link(magnet_link)
+    peers = get_peers_from_magnet(magnet_link)
+    random.shuffle(peers)
+
+    piece_tasks = []
+    pieces = {}
+
+    print(f"\nDownloading torrent")
+    print("Content length: ", torrent_info.content_length)
+    print("Piece length: ", torrent_info.piece_length)
+    print("# of pieces: ", len(torrent_info.piece_hashes))
+
+    # For each piece, select a peer and request the piece from them
+    for piece_index, _piece_hash in enumerate(torrent_info.piece_hashes):
+        # Choose a peer
+        peer = peers[piece_index % len(peers)]
+        # get_torrent_info_from_magnet_link will also perform a handshake
+        # and a open a connection to the peer - refactor this
+        _, peer, reader, writer = await get_torrent_info_from_magnet_link(
+            magnet_link, peer
+        )
+
+        # Download piece
         await initiate_transfer(reader, writer)
         task = asyncio.create_task(
             download_piece_from_peer(reader, writer, torrent_info, peer, piece_index)

@@ -13,10 +13,10 @@ from .dataclasses import MagnetLink
 
 
 async def get_torrent_info_from_magnet_link(
-    magnet_link: MagnetLink,
+    magnet_link: MagnetLink, peer: str | None = None
 ) -> tuple[TorrentInfo, str, asyncio.StreamReader, asyncio.StreamWriter]:
     peers = get_peers_from_magnet(magnet_link)
-    peer = peers[0]
+    peer = peer or peers[0]
 
     _, extensions, reader, writer = await perform_handshake(
         magnet_link.info_hash_bytes, peer

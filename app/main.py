@@ -15,7 +15,8 @@ from .peers import (
 )
 from .download import (
     download_piece_from_peer,
-    download_torrent,
+    download_torrent_from_file,
+    download_torrent_from_magnet,
     download_torrent_piece,
     parse_download_args,
 )
@@ -64,7 +65,7 @@ async def main():
             args = parse_download_args()
             output_dir, torrent_filename = args.output_dir
 
-            await download_torrent(torrent_filename, output_dir)
+            await download_torrent_from_file(torrent_filename, output_dir)
         case "magnet_parse":
             raw_magnet_link = sys.argv[2]
 
@@ -131,6 +132,13 @@ async def main():
             # Write piece
             with open(output_dir, "wb") as file:
                 file.write(piece)
+        case "magnet_download":
+            args = parse_download_args()
+            output_dir, raw_magnet_link = args.output_dir
+
+            magnet_link = MagnetLink.parse(raw_magnet_link)
+
+            await download_torrent_from_magnet(magnet_link, output_dir)
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 
