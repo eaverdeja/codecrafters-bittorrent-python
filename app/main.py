@@ -11,6 +11,7 @@ from .peers import (
     perform_handshake,
     perform_metadata_extension_handshake,
     receive_bitfield_message,
+    send_metadata_request_message,
 )
 from .download import (
     download_torrent,
@@ -91,6 +92,28 @@ async def main():
 
             print(f"Peer ID: {peer_id}")
             print(f"Peer Metadata Extension ID: {peer_metadata_extension_id}")
+        case "magnet_info":
+            raw_magnet_link = sys.argv[2]
+
+            magnet_link = MagnetLink.parse(raw_magnet_link)
+            peers = get_peers_from_magnet(magnet_link)
+            peer = peers[0]
+
+            peer_id, extensions, reader, writer = await perform_handshake(
+                magnet_link.info_hash_bytes, peer
+            )
+            # Note: for this challenge, we don't need to send
+            # the bitfield message, but it would be part of the flow here
+            await receive_bitfield_message(reader)
+
+            # Extend!
+            if extensions.supports_metadata:
+                peer_metadata_extension_id = await perform_metadata_extension_handshake(
+                    reader, writer
+                )
+                await send_metadata_request_message(
+                    peer_metadata_extension_id, reader, writer
+                )
         case _:
             raise NotImplementedError(f"Unknown command {command}")
 

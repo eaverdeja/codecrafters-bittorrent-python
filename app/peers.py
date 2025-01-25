@@ -173,6 +173,22 @@ async def perform_metadata_extension_handshake(
     return extension_handshake_payload["m"]["ut_metadata"]
 
 
+async def send_metadata_request_message(
+    peer_metadata_extension_id: int,
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+):
+    # Send metadata request
+    message_id = int.to_bytes(EXTENSION_MESSAGE_ID, length=1)
+    extension_message_id = int.to_bytes(peer_metadata_extension_id, length=1)
+    extension_payload = encode_bencode({"msg_type": 0, "piece": 0})
+    payload = extension_message_id + extension_payload
+    length = int.to_bytes(len(message_id) + len(payload), length=4)
+    message = length + message_id + payload
+    writer.write(message)
+    await writer.drain()
+
+
 def _add_magnet_link_extension(reserved_bytes: bytes) -> bytes:
     # 20th bit announces support for magnet link extension
     bit_position = METADATA_EXTENSION_BIT_POSITION
